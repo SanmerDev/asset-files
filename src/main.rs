@@ -147,17 +147,15 @@ async fn main() -> io::Result<()> {
                 web::scope("/api")
                     .service(upload)
                     .service(list)
-                    .service(delete),
+                    .service(delete)
+                    .wrap(HttpAuthentication::with_fn(move |req, credentials| {
+                        let tokens = tokens.to_owned();
+                        token::validator(tokens, req, credentials)
+                    })),
             )
             .service(Files::new("/", ROOT_DIR))
             .wrap(middleware::Compress::default())
-            .wrap(middleware::Logger::new(
-                "%{token-name}i %a %r %s %b %{Referer}i %{User-Agent}i %T",
-            ))
-            .wrap(HttpAuthentication::with_fn(move |r, c| {
-                let tokens = tokens.to_owned();
-                token::validator(tokens, r, c)
-            }))
+            .wrap(middleware::Logger::default())
     })
     .bind(("0.0.0.0", 8080))?
     .run()

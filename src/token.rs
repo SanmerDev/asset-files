@@ -1,14 +1,11 @@
 use actix_web::dev::ServiceRequest;
 use actix_web::error;
-use actix_web::http::header::{HeaderName, HeaderValue};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-
-const TOKEN_NAME: &str = "token-name";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Token {
@@ -32,9 +29,15 @@ impl Token {
     }
 }
 
+fn login_log(name: &String, req: &ServiceRequest) {
+    let connection_info = req.connection_info();
+    let addr = connection_info.realip_remote_addr().unwrap_or("-");
+    tracing::info!("{name} (IP: {addr})");
+}
+
 pub async fn validator(
     tokens: Arc<HashMap<String, String>>,
-    mut req: ServiceRequest,
+    req: ServiceRequest,
     credentials: Option<BearerAuth>,
 ) -> Result<ServiceRequest, (error::Error, ServiceRequest)> {
     if tokens.is_empty() {
@@ -45,18 +48,9 @@ pub async fn validator(
         return Err((error::ErrorBadRequest(""), req));
     };
 
-    let token = credentials.token();
-    if tokens.contains_key(token) {
-        Ok(match tokens.get(token) {
-            None => req,
-            Some(name) => {
-                let header = req.headers_mut();
-                if let Ok(value) = HeaderValue::from_bytes(name.as_bytes()) {
-                    header.insert(HeaderName::from_static(TOKEN_NAME), value);
-                }
-                req
-            }
-        })
+    if let Some(name) = tokens.get(credentials.token()) {
+        login_log(name, &req);
+        Ok(req)
     } else {
         Err((error::ErrorUnauthorized(""), req))
     }

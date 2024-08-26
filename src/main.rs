@@ -1,134 +1,91 @@
-mod token;
-
+use crate::file::{Rename, Upload};
 use crate::token::Token;
 use actix_files::Files;
-use actix_multipart::form::tempfile::TempFile;
 use actix_multipart::form::MultipartForm;
-use actix_web::{delete, get, middleware, put, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, middleware, post, put, web, App, HttpResponse, HttpServer, Responder};
 use actix_web_httpauth::middleware::HttpAuthentication;
-use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 use std::{fs, io};
 
-const ROOT_DIR: &str = "/app/data";
+mod file;
+mod token;
+
+#[cfg(not(debug_assertions))]
+const ROOT_DIR: &str = "/data";
+#[cfg(debug_assertions)]
+const ROOT_DIR: &str = "data";
+#[cfg(not(debug_assertions))]
 const AUTH_JSON: &str = "/etc/asset-files/auth.json";
-
-macro_rules! skip_err {
-    ($value:expr) => {
-        match $value {
-            Ok(v) => v,
-            Err(_) => continue,
-        }
-    };
-}
-
-macro_rules! skip_none {
-    ($value:expr) => {
-        match $value {
-            Some(v) => v,
-            None => continue,
-        }
-    };
-}
-
-macro_rules! invalid_data {
-    ($error:expr) => {
-        io::Error::new(io::ErrorKind::InvalidData, $error)
-    };
-}
+#[cfg(debug_assertions)]
+const AUTH_JSON: &str = "auth.json";
 
 macro_rules! json {
     ($content:expr) => {
-        HttpResponse::Ok()
-            .content_type("application/json")
-            .body($content)
+        match $content {
+            Ok(v) => HttpResponse::Ok().content_type("application/json").body(v),
+            Err(_) => HttpResponse::InternalServerError().finish(),
+        }
     };
 }
 
-#[derive(MultipartForm)]
-struct UploadForm {
-    #[multipart(rename = "file")]
-    files: Vec<TempFile>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FileItem {
-    name: String,
-    size: u64,
-    timestamp: u128,
-}
-
-impl FileItem {
-    fn raed<P: AsRef<Path>>(p: P) -> io::Result<Self> {
-        let metadata = fs::metadata(&p)?;
-        let time = metadata.modified()?;
-        let duration = time
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| invalid_data!(e))?;
-        let timestamp = duration.as_millis();
-
-        let path = p.as_ref();
-        let name = match path.file_name() {
-            Some(v) => v.to_str().map_or(timestamp.to_string(), |v| v.to_string()),
-            None => return Err(invalid_data!("Unnamed")),
-        };
-
-        Ok(Self {
-            name: name.to_string(),
-            size: metadata.len(),
-            timestamp,
-        })
-    }
-}
-
-#[put("/cp")]
-async fn upload(MultipartForm(form): MultipartForm<UploadForm>) -> impl Responder {
-    let root_dir = Path::new(ROOT_DIR);
-    let mut values: Vec<FileItem> = Vec::new();
-    for file in form.files {
-        let name = skip_none!(file.file_name);
-        let to = root_dir.join(name);
-        let _size = skip_err!(fs::copy(file.file, &to));
-        let item = skip_err!(FileItem::raed(to));
-        values.push(item);
-    }
-
-    values.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    json!(serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_owned()))
-}
-
-#[get("/ls")]
-async fn list() -> impl Responder {
-    let entries = match fs::read_dir(ROOT_DIR) {
+#[get("/files")]
+async fn get_files() -> impl Responder {
+    let mut files = match file::list(ROOT_DIR) {
         Ok(v) => v,
-        Err(_) => return HttpResponse::NoContent().finish(),
+        Err(_) => return HttpResponse::InternalServerError().finish(),
     };
-
-    let mut values: Vec<FileItem> = Vec::new();
-    for entry in entries.flat_map(|v| v.ok()) {
-        let path = entry.path();
-        let item = skip_err!(FileItem::raed(path));
-        values.push(item);
+    if files.is_empty() {
+        HttpResponse::NotFound().finish()
+    } else {
+        files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        json!(serde_json::to_string(&files))
     }
-
-    values.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    json!(serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_owned()))
 }
 
-#[delete("/rm/{name}")]
-async fn delete(name: web::Path<String>) -> impl Responder {
-    let path = name.into_inner();
-    let root_dir = Path::new(ROOT_DIR);
-    let file = root_dir.join(&path);
-    if !file.is_file() {
-        return HttpResponse::NotFound();
+#[post("/create")]
+async fn create_files(MultipartForm(upload): MultipartForm<Upload>) -> impl Responder {
+    let root_dir = PathBuf::from(ROOT_DIR);
+    let files = file::create(upload, &root_dir);
+    if files.is_empty() {
+        HttpResponse::BadRequest().finish()
+    } else {
+        json!(serde_json::to_string(&files))
     }
+}
 
-    match fs::remove_file(file) {
-        Ok(_) => HttpResponse::NoContent(),
-        Err(_) => HttpResponse::Forbidden(),
+#[put("/rename")]
+async fn rename_files(renames: web::Json<Vec<Rename>>) -> impl Responder {
+    let root_dir = PathBuf::from(ROOT_DIR);
+    let renames = renames.into_inner();
+    let files = file::rename_all(&renames, &root_dir);
+    if files.is_empty() {
+        HttpResponse::NotFound().finish()
+    } else {
+        json!(serde_json::to_string(&files))
+    }
+}
+
+#[post("/delete")]
+async fn delete_files(names: web::Json<Vec<String>>) -> impl Responder {
+    let root_dir = PathBuf::from(ROOT_DIR);
+    let names = names.into_inner();
+    let names = file::delete_all(names, &root_dir);
+    if names.is_empty() {
+        HttpResponse::NotFound().finish()
+    } else {
+        json!(serde_json::to_string(&names))
+    }
+}
+
+#[get("/file/{name}")]
+async fn get_file(name: web::Path<String>) -> impl Responder {
+    let root_dir = PathBuf::from(ROOT_DIR);
+    let path = name.into_inner();
+    let path = root_dir.join(&path);
+    match file::raed(path) {
+        Ok(v) => json!(serde_json::to_string(&v)),
+        Err(_) => HttpResponse::NotFound().finish(),
     }
 }
 
@@ -145,9 +102,11 @@ async fn main() -> io::Result<()> {
         App::new()
             .service(
                 web::scope("/api")
-                    .service(upload)
-                    .service(list)
-                    .service(delete)
+                    .service(get_files)
+                    .service(create_files)
+                    .service(rename_files)
+                    .service(delete_files)
+                    .service(get_file)
                     .wrap(HttpAuthentication::with_fn(move |req, credentials| {
                         let tokens = tokens.to_owned();
                         token::validator(tokens, req, credentials)

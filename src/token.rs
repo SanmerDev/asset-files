@@ -1,5 +1,6 @@
 use actix_web::dev::ServiceRequest;
 use actix_web::error;
+use actix_web::http::Method;
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,27 +30,18 @@ impl Token {
     }
 }
 
-fn login_log(name: &String, req: &ServiceRequest) {
-    let connection_info = req.connection_info();
-    let addr = connection_info.realip_remote_addr().unwrap_or("-");
-    tracing::info!("{name} (IP: {addr})");
-}
-
 pub async fn validator(
     tokens: Arc<HashMap<String, String>>,
     req: ServiceRequest,
     credentials: Option<BearerAuth>,
 ) -> Result<ServiceRequest, (error::Error, ServiceRequest)> {
-    if tokens.is_empty() {
+    if tokens.is_empty() || req.method() == Method::GET {
         return Ok(req);
     }
-
     let Some(credentials) = credentials else {
         return Err((error::ErrorBadRequest(""), req));
     };
-
-    if let Some(name) = tokens.get(credentials.token()) {
-        login_log(name, &req);
+    if let Some(_name) = tokens.get(credentials.token()) {
         Ok(req)
     } else {
         Err((error::ErrorUnauthorized(""), req))

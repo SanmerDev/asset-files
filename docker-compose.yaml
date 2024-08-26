@@ -6,7 +6,7 @@ services:
     ports:
       - 80:8080
     volumes:
-      - asset-data:/app/data
+      - asset-data:/data
       - ./auth.json:/etc/asset-files/auth.json
 volumes:
   asset-data: {}

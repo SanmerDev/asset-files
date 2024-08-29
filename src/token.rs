@@ -1,12 +1,11 @@
 use actix_web::dev::ServiceRequest;
-use actix_web::error;
 use actix_web::http::Method;
+use actix_web::{error, web};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Token {
@@ -31,10 +30,12 @@ impl Token {
 }
 
 pub async fn validator(
-    tokens: Arc<HashMap<String, String>>,
     req: ServiceRequest,
     credentials: Option<BearerAuth>,
 ) -> Result<ServiceRequest, (error::Error, ServiceRequest)> {
+    let Some(tokens) = req.app_data::<web::Data<HashMap<String, String>>>() else {
+        return Ok(req);
+    };
     if tokens.is_empty() || req.method() == Method::GET {
         return Ok(req);
     }

@@ -5,7 +5,6 @@ use actix_multipart::form::MultipartForm;
 use actix_web::{get, middleware, post, put, web, App, HttpResponse, HttpServer, Responder};
 use actix_web_httpauth::middleware::HttpAuthentication;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::{fs, io};
 
 mod file;
@@ -20,15 +19,6 @@ const AUTH_JSON: &str = "/etc/asset-files/auth.json";
 #[cfg(debug_assertions)]
 const AUTH_JSON: &str = "auth.json";
 
-macro_rules! json {
-    ($content:expr) => {
-        match $content {
-            Ok(v) => HttpResponse::Ok().content_type("application/json").body(v),
-            Err(_) => HttpResponse::InternalServerError().finish(),
-        }
-    };
-}
-
 #[get("/files")]
 async fn get_files() -> impl Responder {
     let mut files = match file::list(ROOT_DIR) {
@@ -39,7 +29,7 @@ async fn get_files() -> impl Responder {
         HttpResponse::NotFound().finish()
     } else {
         files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        json!(serde_json::to_string(&files))
+        HttpResponse::Ok().json(files)
     }
 }
 
@@ -50,7 +40,7 @@ async fn create_files(MultipartForm(upload): MultipartForm<Upload>) -> impl Resp
     if files.is_empty() {
         HttpResponse::BadRequest().finish()
     } else {
-        json!(serde_json::to_string(&files))
+        HttpResponse::Ok().json(files)
     }
 }
 
@@ -62,7 +52,7 @@ async fn rename_files(renames: web::Json<Vec<Rename>>) -> impl Responder {
     if files.is_empty() {
         HttpResponse::NotFound().finish()
     } else {
-        json!(serde_json::to_string(&files))
+        HttpResponse::Ok().json(files)
     }
 }
 
@@ -74,7 +64,7 @@ async fn delete_files(names: web::Json<Vec<String>>) -> impl Responder {
     if names.is_empty() {
         HttpResponse::NotFound().finish()
     } else {
-        json!(serde_json::to_string(&names))
+        HttpResponse::Ok().json(names)
     }
 }
 
@@ -84,7 +74,7 @@ async fn get_file(name: web::Path<String>) -> impl Responder {
     let path = name.into_inner();
     let path = root_dir.join(&path);
     match file::raed(path) {
-        Ok(v) => json!(serde_json::to_string(&v)),
+        Ok(v) => HttpResponse::Ok().json(v),
         Err(_) => HttpResponse::NotFound().finish(),
     }
 }
@@ -97,20 +87,18 @@ async fn main() -> io::Result<()> {
         .with_target(false)
         .init();
 
-    HttpServer::new(|| {
-        let tokens = Arc::new(Token::load_map(AUTH_JSON));
+    let tokens = web::Data::new(Token::load_map(AUTH_JSON));
+    HttpServer::new(move || {
         App::new()
             .service(
                 web::scope("/api")
+                    .app_data(tokens.to_owned())
                     .service(get_files)
                     .service(create_files)
                     .service(rename_files)
                     .service(delete_files)
                     .service(get_file)
-                    .wrap(HttpAuthentication::with_fn(move |req, credentials| {
-                        let tokens = tokens.to_owned();
-                        token::validator(tokens, req, credentials)
-                    })),
+                    .wrap(HttpAuthentication::with_fn(token::validator)),
             )
             .service(Files::new("/", ROOT_DIR))
             .wrap(middleware::Compress::default())

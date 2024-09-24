@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.80-alpine AS builder
+FROM --platform=$BUILDPLATFORM rust:alpine AS builder
 COPY . /rust/asset-files
 WORKDIR /rust
 RUN set -ex \
